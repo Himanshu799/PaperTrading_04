@@ -31,9 +31,7 @@ SEQ_LEN         = 60
 INITIAL_BALANCE = 10_000
 TRAIN_YEAR      = 2022
 
-ALPACA_API_KEY    = "PK4NLA1IF8I62FZVEJMT"
-ALPACA_SECRET_KEY = "U9bNYdnf4nWRGxZ3bjUVSAimfSP8d3bwHNa5r3S9"
-ALPACA_BASE_URL   = "https://paper-api.alpaca.markets"
+
 
 TIMEFRAME      = TimeFrame.Minute
 LOOKBACK_BARS  = SEQ_LEN + 20
