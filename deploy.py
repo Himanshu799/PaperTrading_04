@@ -31,6 +31,14 @@ SEQ_LEN         = 60
 INITIAL_BALANCE = 10_000
 TRAIN_YEAR      = 2022
 
+import os
+
+ALPACA_API_KEY    = os.environ["APCA_API_KEY_ID"]
+ALPACA_SECRET_KEY = os.environ["APCA_API_SECRET_KEY"]
+ALPACA_BASE_URL   = os.environ.get(
+    "APCA_API_BASE_URL",
+    "https://paper-api.alpaca.markets"
+)
 
 
 TIMEFRAME      = TimeFrame.Minute
