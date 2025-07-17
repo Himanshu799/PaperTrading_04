@@ -145,81 +145,104 @@ def get_recent_bars(sym: str) -> pd.DataFrame:
 # ─── 4) PORTFOLIO TRACKING ─────────────────────────────────────────────────────
 portfolio = {s: {"shares": 0} for s in TICKERS}
 
+from time import perf_counter
+
 if __name__ == "__main__":
-    print("▶️  Starting intraday live deploy. Ctrl+C to exit.")
+    print("▶️  Starting intraday live deploy. Ctrl+C to exit.", flush=True)
     try:
         while True:
-            # ── Check market status ────────────────────────────────────
+            loop_start = perf_counter()
+            now = pd.Timestamp.now()
+            print(f"\n🔄 Loop start: {now.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+
+            # 1) Check market status
+            t0 = perf_counter()
             clock = api.get_clock()
-            if not clock.is_open:
-                next_open = clock.next_open.strftime("%Y-%m-%d %H:%M:%S %Z")
-                print(f"⏸  Market is closed. Next open at {next_open}.")
+            market_open = clock.is_open
+            market_msg = (f"Market open, next close at {clock.next_close}"
+                          if market_open
+                          else f"Market closed, next open at {clock.next_open}")
+            print(f"  ⏱ Market check ({perf_counter()-t0:.3f}s): {market_msg}", flush=True)
+            if not market_open:
                 time.sleep(SLEEP_INTERVAL)
                 continue
-            # ─────────────────────────────────────────────────────────────
 
-            # refresh buying power each loop
-            account    = api.get_account()
+            # 2) Refresh buying power
+            t1 = perf_counter()
+            account = api.get_account()
             cash_avail = float(account.cash)
+            if not np.isfinite(cash_avail) or cash_avail < 0:
+                print(f"  ⚠️  Invalid cash_avail ({cash_avail}), resetting to 0", flush=True)
+                cash_avail = 0.0
+            print(f"  💰 Cash avail ({perf_counter()-t1:.3f}s): ${cash_avail:.2f}", flush=True)
 
+            # 3) Per‐ticker processing
             for sym in TICKERS:
+                print(f"  ▶ {sym}", flush=True)
+
+                # 3a) Fetch bars
+                t2 = perf_counter()
                 df_bar = get_recent_bars(sym)
-                price  = float(df_bar["close"].iloc[-1])
-
-                feats = extract_features_intraday(sym, df_bar)
-                obs   = np.concatenate([
-                    feats, [price, cash_avail, portfolio[sym]["shares"]]
-                ]).astype(np.float32)
-
-                if np.any(np.isnan(obs)) or np.any(np.isinf(obs)):
-                    print(f"‼️  Skipping {sym}: invalid obs vector:")
-                    print(obs)            # raw array
-                    print("  feats:", feats)
-                    print("  price, cash, shares:", price, cash_avail, portfolio[sym]["shares"])
+                if df_bar.empty:
+                    print(f"    ⚠️  No bars fetched ({perf_counter()-t2:.3f}s), skipping", flush=True)
                     continue
+                price = float(df_bar["close"].iloc[-1])
+                print(f"    📊 Fetch+Price ({perf_counter()-t2:.3f}s): price={price:.2f}", flush=True)
 
+                # 3b) Feature extraction
+                t3 = perf_counter()
+                try:
+                    feats = extract_features_intraday(sym, df_bar)
+                except Exception as e:
+                    print(f"    ⚠️  Feature error ({perf_counter()-t3:.3f}s): {e}", flush=True)
+                    continue
+                print(f"    🛠 Features ({perf_counter()-t3:.3f}s)", flush=True)
+
+                # 3c) Build observation
+                obs = np.concatenate([feats, [price, cash_avail, portfolio[sym]["shares"]]]).astype(np.float32)
+                obs = np.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
+
+                # 3d) Action selection
+                t4 = perf_counter()
                 action, _ = agent.predict(obs, deterministic=True)
-                # 0=Hold, 1=Buy, 2=Sell
+                print(f"    🤖 Action ({perf_counter()-t4:.3f}s): {['Hold','Buy','Sell'][action]}", flush=True)
 
-                if action == 1:
+                # 3e) Order execution
+                t5 = perf_counter()
+                if action == 1 and cash_avail >= price:
                     qty = int(cash_avail // price)
-                    if qty > 0:
-                        try:
-                            api.submit_order(
-                                symbol        = sym,
-                                qty           = qty,
-                                side          = "buy",
-                                type          = "market",
-                                time_in_force = "gtc"
-                            )
-                            portfolio[sym]["shares"] += qty
-                            cash_avail -= qty * price
-                            print(f"[{sym}] BUY  {qty} @ {price:.2f}")
-                        except APIError as e:
-                            print(f"[{sym}] BUY failed: {e}")
+                    try:
+                        api.submit_order(symbol=sym, qty=qty,
+                                         side="buy", type="market", time_in_force="gtc")
+                        portfolio[sym]["shares"] += qty
+                        cash_avail -= qty * price
+                        print(f"    ✅ BUY  {qty}@{price:.2f}", flush=True)
+                    except APIError as e:
+                        print(f"    ❌ BUY failed: {e}", flush=True)
 
                 elif action == 2 and portfolio[sym]["shares"] > 0:
                     qty = portfolio[sym]["shares"]
                     try:
-                        api.submit_order(
-                            symbol        = sym,
-                            qty           = qty,
-                            side          = "sell",
-                            type          = "market",
-                            time_in_force = "gtc"
-                        )
-                        cash_avail += qty * price
+                        api.submit_order(symbol=sym, qty=qty,
+                                         side="sell", type="market", time_in_force="gtc")
                         portfolio[sym]["shares"] = 0
-                        print(f"[{sym}] SELL {qty} @ {price:.2f}")
+                        cash_avail += qty * price
+                        print(f"    ✅ SELL {qty}@{price:.2f}", flush=True)
                     except APIError as e:
-                        print(f"[{sym}] SELL failed: {e}")
+                        print(f"    ❌ SELL failed: {e}", flush=True)
 
-            print(f"⏱  Sleeping {SLEEP_INTERVAL}s …\n")
+                print(f"    ⏳ Order exec ({perf_counter()-t5:.3f}s)", flush=True)
+
+            # 4) Loop summary & sleep
+            loop_time = perf_counter() - loop_start
+            next_run = now + pd.Timedelta(seconds=SLEEP_INTERVAL)
+            print(f"✅ Loop done in {loop_time:.2f}s. Next run at {next_run.strftime('%H:%M:%S')}\n", flush=True)
+
             time.sleep(SLEEP_INTERVAL)
 
     except KeyboardInterrupt:
-        print("🛑  Stopped by user")
+        print("🛑  Stopped by user", flush=True)
 
     except Exception as e:
-        print("⚠️  Error in loop:", e)
+        print("⚠️  Error in loop:", e, flush=True)
         time.sleep(5)
