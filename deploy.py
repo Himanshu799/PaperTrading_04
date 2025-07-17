@@ -32,11 +32,11 @@ INITIAL_BALANCE = 10_000
 TRAIN_YEAR      = 2022
 
 import os
-
-ALPACA_API_KEY    = os.environ["APCA_API_KEY_ID"]
-ALPACA_SECRET_KEY = os.environ["APCA_API_SECRET_KEY"]
+load_dotenv()
+ALPACA_API_KEY    = os.environ["ALPACA_API_KEY"]
+ALPACA_SECRET_KEY = os.environ["ALPACA_SECRET_KEY"]
 ALPACA_BASE_URL   = os.environ.get(
-    "APCA_API_BASE_URL",
+    "ALPACA_BASE_URL",
     "https://paper-api.alpaca.markets"
 )
 
