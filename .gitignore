@@ -1,0 +1,17 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Environment & secrets
+.env
+.env.sample 
+
+# IDE configs
+.vscode/
+.idea/
+
+# MacOS
+.DS_Store
+yes
+ED25519 key fingerprint is SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU.
