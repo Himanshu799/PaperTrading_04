@@ -1,27 +1,42 @@
-# 1. Base and system deps for build
+# ─── 1) Builder: install deps ─────────────────────────────────────────────────
 FROM python:3.10-slim AS builder
-RUN apt-get update && \
-    apt-get install -y build-essential && \
-    rm -rf /var/lib/apt/lists/*
+
+ENV \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
 
-# 2. Install Python deps
+# install system build‐essentials (for any packages with C extensions)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential wget ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# copy & install only Python requirements
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --prefix=/install -r requirements.txt
 
-# 3. Final image
+
+# ─── 2) Final: copy runtime bits only ──────────────────────────────────────────
 FROM python:3.10-slim
+
+ENV \
+    PYTHONUNBUFFERED=1 \
+    PATH=/install/bin:$PATH \
+    PYTHONPATH=/install/lib/python3.10/site-packages
+
 WORKDIR /app
 
-# 4. Copy installed packages
-COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+# copy installed packages from builder
+COPY --from=builder /install /install
 
-# 5. Copy your code + data
+# copy your application code
 COPY deploy.py .
-COPY models/ models/
-COPY preprocessed_data/ preprocessed_data/
-COPY cnn_lstm_multi_stock_ppo.zip .
 
-# 6. Entrypoint
+# if you mount or download models at runtime, skip copying them here
+# otherwise, uncomment and selectively copy only what you absolutely need:
+# COPY models/small_model.h5 models/
+# COPY processed_data/aapl_state_cnnlstm_test.npy processed_data/
+
+# run
 CMD ["python", "deploy.py"]
