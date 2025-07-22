@@ -44,9 +44,9 @@ def get_recent_bars(sym: str) -> pd.DataFrame:
     return pd.DataFrame(data).set_index("t")
 
 def extract_features_intraday(sym: str, df: pd.DataFrame) -> np.ndarray:
-    # IMPORTANT: Replace this with your real feature extractor!
-    # This dummy version assumes 11 features per stock (adjust if you use more/less).
-    return np.zeros(11)  # Change 11 to your actual per-stock feature count.
+    # IMPORTANT: Replace with your real feature extraction pipeline!
+    # This placeholder assumes 10 features per stock.
+    return np.zeros(10)  # CHANGE 10 to your true per-stock feature count from RL training!
 
 # ─── MAIN TRADING LOOP ───────────────────────────────────────────────────
 if __name__ == "__main__":
@@ -92,7 +92,7 @@ if __name__ == "__main__":
                 time.sleep(SLEEP_INTERVAL)
                 continue
 
-            obs_features = np.concatenate(features_list)        # e.g. (5*11,) = (55,)
+            obs_features = np.concatenate(features_list)        # (5*10,) = (50,)
             obs_prices = np.array(prices_list)                  # (5,)
             portfolio_shares = np.array([portfolio[sym]["shares"] for sym in TICKERS])  # (5,)
             obs = np.concatenate([
@@ -100,10 +100,10 @@ if __name__ == "__main__":
                 obs_prices,
                 [cash_avail],
                 portfolio_shares
-            ]).astype(np.float32)                               # e.g. (55+5+1+5,) = (66,)
+            ]).astype(np.float32)  # (50+5+1+5,) = (61,)
 
             # 4) RL agent allocation weights
-            # IMPORTANT: Do not reshape! SB3 expects (N_FEATURES,) not (1, N_FEATURES)
+            # DO NOT reshape! SB3 expects (N_FEATURES,) not (1, N_FEATURES)
             weights, _ = agent.predict(obs, deterministic=True)
             weights = np.clip(weights, 0, 1)
             total_weight = weights.sum()
