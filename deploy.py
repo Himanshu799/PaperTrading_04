@@ -44,9 +44,9 @@ def get_recent_bars(sym: str) -> pd.DataFrame:
     return pd.DataFrame(data).set_index("t")
 
 def extract_features_intraday(sym: str, df: pd.DataFrame) -> np.ndarray:
-    # Dummy placeholder: replace with your actual feature extraction!
-    # Should return a 1D np.ndarray matching your model's expectations
-    return np.zeros(20)  # <<--- replace this with real feature extraction
+    # IMPORTANT: Replace this with your real feature extractor!
+    # This dummy version assumes 11 features per stock (adjust if you use more/less).
+    return np.zeros(11)  # Change 11 to your actual per-stock feature count.
 
 # ─── MAIN TRADING LOOP ───────────────────────────────────────────────────
 if __name__ == "__main__":
@@ -92,19 +92,18 @@ if __name__ == "__main__":
                 time.sleep(SLEEP_INTERVAL)
                 continue
 
-            obs_features = np.concatenate(features_list)
-            obs_prices = np.array(prices_list)
-            portfolio_shares = np.array([portfolio[sym]["shares"] for sym in TICKERS])
-            total_equity = cash_avail + np.sum(portfolio_shares * obs_prices)
-
+            obs_features = np.concatenate(features_list)        # e.g. (5*11,) = (55,)
+            obs_prices = np.array(prices_list)                  # (5,)
+            portfolio_shares = np.array([portfolio[sym]["shares"] for sym in TICKERS])  # (5,)
             obs = np.concatenate([
                 obs_features,
                 obs_prices,
                 [cash_avail],
                 portfolio_shares
-            ]).astype(np.float32).reshape(1, -1)
+            ]).astype(np.float32)                               # e.g. (55+5+1+5,) = (66,)
 
             # 4) RL agent allocation weights
+            # IMPORTANT: Do not reshape! SB3 expects (N_FEATURES,) not (1, N_FEATURES)
             weights, _ = agent.predict(obs, deterministic=True)
             weights = np.clip(weights, 0, 1)
             total_weight = weights.sum()
@@ -112,6 +111,7 @@ if __name__ == "__main__":
                 weights /= total_weight
 
             # 5) Cap by performance weights
+            total_equity = cash_avail + np.sum(portfolio_shares * obs_prices)
             perf_alloc = np.array([PERFORMANCE_WEIGHTS[sym] for sym in TICKERS]) * total_equity
             alloc_dollars = np.minimum(weights * total_equity, perf_alloc)
 
