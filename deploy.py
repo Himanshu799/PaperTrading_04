@@ -12,11 +12,11 @@ from alpaca_trade_api.rest import REST, TimeFrame, APIError
 # ─── CONFIG ──────────────────────────────────────────────────────────────
 TICKERS = ["AAPL", "JPM", "AMZN", "TSLA", "MSFT"]
 PERFORMANCE_WEIGHTS = {
-    "AAPL": 0.10,
-    "JPM":  0.12,
-    "AMZN": 0.26,
-    "TSLA": 0.18,
-    "MSFT": 0.34
+    "AAPL": 0.2,
+    "JPM":  0.2,
+    "AMZN": 0.2,
+    "TSLA": 0.2,
+    "MSFT": 0.2
 }
 assert abs(sum(PERFORMANCE_WEIGHTS.values()) - 1) < 1e-3, "Weights must sum to 1"
 SEQ_LEN = 60
