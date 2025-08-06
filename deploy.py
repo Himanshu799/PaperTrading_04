@@ -11,25 +11,16 @@ from alpaca_trade_api.rest import REST, TimeFrame, APIError
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────
 TICKERS = ["AAPL", "JPM", "AMZN", "TSLA", "MSFT"]
-PERFORMANCE_WEIGHTS = {
-    "AAPL": 0.2,
-    "JPM":  0.2,
-    "AMZN": 0.2,
-    "TSLA": 0.2,
-    "MSFT": 0.2
-}
-assert abs(sum(PERFORMANCE_WEIGHTS.values()) - 1) < 1e-3, "Weights must sum to 1"
-SEQ_LEN = 60
+SEQ_LEN = 10  # Must match your RL window_size
 INITIAL_BALANCE = 10_000
 SLEEP_INTERVAL = 60  # seconds between loops
 
-# Alpaca credentials from environment or your config
 ALPACA_API_KEY    = os.environ["ALPACA_API_KEY"]
 ALPACA_SECRET_KEY = os.environ["ALPACA_SECRET_KEY"]
 ALPACA_BASE_URL   = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
 
 # ─── RL AGENT LOAD ────────────────────────────────────────────────────────
-agent = PPO.load("cnn_lstm_multi_stock_ppo.zip")
+agent = PPO.load("ppo_multistock_rl.zip")  # Your trained model
 
 # ─── ALPACA CLIENT ───────────────────────────────────────────────────────
 api = REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, api_version='v2')
@@ -37,16 +28,21 @@ api = REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, api_version='v2')
 # ─── PORTFOLIO STATE ─────────────────────────────────────────────────────
 portfolio = {s: {"shares": 0} for s in TICKERS}
 
-# ─── FEATURE/BAR HELPERS (provide your actual versions) ──────────────────
+# ─── FEATURE/BAR HELPERS ─────────────────────────────────────────────────
 def get_recent_bars(sym: str) -> pd.DataFrame:
-    bars = api.get_bars(symbol=sym, timeframe=TimeFrame.Minute, limit=SEQ_LEN+20)
-    data = [{"t": b.t, "open": b.o, "high": b.h, "low": b.l, "close": b.c, "volume": b.v} for b in bars]
-    return pd.DataFrame(data).set_index("t")
+    bars = api.get_bars(symbol=sym, timeframe=TimeFrame.Minute, limit=SEQ_LEN+1).df
+    if bars.empty:
+        return pd.DataFrame()
+    bars = bars.tail(SEQ_LEN)  # Ensure correct length
+    bars = bars.reset_index()
+    return bars
 
-def extract_features_intraday(sym: str, df: pd.DataFrame) -> np.ndarray:
-    # IMPORTANT: Replace with your real feature extraction pipeline!
-    # This placeholder assumes 10 features per stock.
-    return np.zeros(10)  # CHANGE 10 to your true per-stock feature count from RL training!
+def get_normalized_close_window(sym: str) -> np.ndarray:
+    df = get_recent_bars(sym)
+    if df.empty or len(df) < SEQ_LEN:
+        raise ValueError(f"Not enough bars for {sym}")
+    closes = df['close'].to_numpy()
+    return closes / closes[0]  # normalize to first value
 
 # ─── MAIN TRADING LOOP ───────────────────────────────────────────────────
 if __name__ == "__main__":
@@ -70,81 +66,68 @@ if __name__ == "__main__":
             cash_avail = float(account.cash)
             print(f"  💰 Cash available: ${cash_avail:.2f}")
 
-            # 3) Batch feature and price collection
-            features_list, prices_list, skip_idx = [], [], []
-            for i, sym in enumerate(TICKERS):
+            # 3) Build RL observation (normalized price windows + cash ratio + shares)
+            price_windows, latest_prices, skip_idx = [], [], []
+            for sym in TICKERS:
                 try:
+                    norm_window = get_normalized_close_window(sym)
                     df_bar = get_recent_bars(sym)
-                    if df_bar.empty:
-                        skip_idx.append(i)
-                        print(f"  ⚠️  No bars for {sym}")
-                        continue
-                    price = float(df_bar["close"].iloc[-1])
-                    feats = extract_features_intraday(sym, df_bar)
-                    features_list.append(feats)
-                    prices_list.append(price)
+                    price = float(df_bar['close'].iloc[-1])
+                    price_windows.append(norm_window)
+                    latest_prices.append(price)
                 except Exception as e:
-                    skip_idx.append(i)
-                    print(f"  ⚠️  Error for {sym}: {e}")
+                    skip_idx.append(sym)
+                    print(f"  ⚠️  Data error for {sym}: {e}")
 
-            if len(features_list) != len(TICKERS):
+            if len(price_windows) != len(TICKERS):
                 print("  ⚠️  Missing data for one or more tickers, skipping loop.")
                 time.sleep(SLEEP_INTERVAL)
                 continue
 
-            obs_features = np.concatenate(features_list)        # (5*10,) = (50,)
-            obs_prices = np.array(prices_list)                  # (5,)
-            portfolio_shares = np.array([portfolio[sym]["shares"] for sym in TICKERS])  # (5,)
-            obs = np.concatenate([
-                obs_features,
-                obs_prices,
-                [cash_avail],
-                portfolio_shares
-            ]).astype(np.float32)  # (50+5+1+5,) = (61,)
+            price_windows = np.array(price_windows).flatten()
+            latest_prices = np.array(latest_prices)
+            portfolio_shares = np.array([portfolio[sym]["shares"] for sym in TICKERS], dtype=np.float32)
+            cash_ratio = cash_avail / INITIAL_BALANCE
+            obs = np.concatenate([price_windows, [cash_ratio], portfolio_shares]).astype(np.float32).reshape(1, -1)
 
-            # 4) RL agent allocation weights
-            # DO NOT reshape! SB3 expects (N_FEATURES,) not (1, N_FEATURES)
+            # 4) RL agent output (allocation weights)
             weights, _ = agent.predict(obs, deterministic=True)
             weights = np.clip(weights, 0, 1)
             total_weight = weights.sum()
             if total_weight > 1:
                 weights /= total_weight
 
-            # 5) Cap by performance weights
-            total_equity = cash_avail + np.sum(portfolio_shares * obs_prices)
-            perf_alloc = np.array([PERFORMANCE_WEIGHTS[sym] for sym in TICKERS]) * total_equity
-            alloc_dollars = np.minimum(weights * total_equity, perf_alloc)
+            # 5) Compute target dollar allocations
+            portfolio_value = cash_avail + np.sum(portfolio_shares * latest_prices)
+            target_alloc_dollars = weights * portfolio_value
 
-            # 6) Rebalance via Alpaca orders
+            # 6) Rebalance by trading to match allocations
             for i, sym in enumerate(TICKERS):
-                price = obs_prices[i]
-                target_val = alloc_dollars[i]
-                curr_val = portfolio[sym]["shares"] * price
-                diff_val = target_val - curr_val
-                if abs(diff_val) < price:
-                    continue  # Ignore if < 1 share
-                shares_to_trade = int(abs(diff_val) // price)
-                if shares_to_trade == 0:
+                price = latest_prices[i]
+                target_shares = int(target_alloc_dollars[i] // price)
+                current_shares = portfolio[sym]["shares"]
+                shares_to_trade = target_shares - current_shares
+                if abs(shares_to_trade) < 1:
                     continue
 
-                if diff_val > 0 and cash_avail >= shares_to_trade * price:
+                if shares_to_trade > 0 and cash_avail >= shares_to_trade * price:
                     # BUY
                     try:
-                        api.submit_order(symbol=sym, qty=shares_to_trade,
-                                         side="buy", type="market", time_in_force="gtc")
+                        api.submit_order(symbol=sym, qty=shares_to_trade, side="buy",
+                                         type="market", time_in_force="gtc")
                         portfolio[sym]["shares"] += shares_to_trade
                         cash_avail -= shares_to_trade * price
                         print(f"  ✅ BUY  {shares_to_trade} {sym} @ {price:.2f}")
                     except APIError as e:
                         print(f"  ❌ BUY failed for {sym}: {e}")
-                elif diff_val < 0 and portfolio[sym]["shares"] >= shares_to_trade:
+                elif shares_to_trade < 0 and current_shares >= abs(shares_to_trade):
                     # SELL
                     try:
-                        api.submit_order(symbol=sym, qty=shares_to_trade,
-                                         side="sell", type="market", time_in_force="gtc")
-                        portfolio[sym]["shares"] -= shares_to_trade
-                        cash_avail += shares_to_trade * price
-                        print(f"  ✅ SELL {shares_to_trade} {sym} @ {price:.2f}")
+                        api.submit_order(symbol=sym, qty=abs(shares_to_trade), side="sell",
+                                         type="market", time_in_force="gtc")
+                        portfolio[sym]["shares"] -= abs(shares_to_trade)
+                        cash_avail += abs(shares_to_trade) * price
+                        print(f"  ✅ SELL {abs(shares_to_trade)} {sym} @ {price:.2f}")
                     except APIError as e:
                         print(f"  ❌ SELL failed for {sym}: {e}")
 
@@ -152,7 +135,6 @@ if __name__ == "__main__":
             loop_time = perf_counter() - loop_start
             next_run = now + pd.Timedelta(seconds=SLEEP_INTERVAL)
             print(f"✅ Loop done in {loop_time:.2f}s. Next run at {next_run.strftime('%H:%M:%S')}\n", flush=True)
-
             time.sleep(SLEEP_INTERVAL)
 
     except KeyboardInterrupt:
