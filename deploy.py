@@ -20,7 +20,7 @@ ALPACA_SECRET_KEY = os.environ["ALPACA_SECRET_KEY"]
 ALPACA_BASE_URL   = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
 
 # ─── RL AGENT LOAD ────────────────────────────────────────────────────────
-agent = PPO.load("ppo_multistock_rl.zip")  # Your trained model
+agent = PPO.load("ppo_multistock_rl")  # Your trained model
 
 # ─── ALPACA CLIENT ───────────────────────────────────────────────────────
 api = REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, api_version='v2')
@@ -142,3 +142,4 @@ if __name__ == "__main__":
     except Exception as e:
         print("⚠️  Error in loop:", e, flush=True)
         time.sleep(5)
+
