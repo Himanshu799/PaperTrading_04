@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 print("Current working directory:", os.getcwd())
+
 print("Files in this directory:", os.listdir())
 
 import os
@@ -145,5 +146,6 @@ if __name__ == "__main__":
     except Exception as e:
         print("⚠️  Error in loop:", e, flush=True)
         time.sleep(5)
+
 
 
