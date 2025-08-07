@@ -21,7 +21,6 @@ COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/pytho
 COPY deploy.py .
 COPY models/ models/
 COPY preprocessed_data/ preprocessed_data/
-COPY cnn_lstm_multi_stock_ppo.zip .
 COPY ppo_multistock_rl.zip .
 
 # 6. Entrypoint
