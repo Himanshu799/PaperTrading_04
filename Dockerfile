@@ -22,6 +22,7 @@ COPY deploy.py .
 COPY models/ models/
 COPY preprocessed_data/ preprocessed_data/
 COPY cnn_lstm_multi_stock_ppo.zip .
+COPY ppo_multistock_rl.zip .
 
 # 6. Entrypoint
 CMD ["python", "deploy.py"]
