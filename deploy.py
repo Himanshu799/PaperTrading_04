@@ -15,7 +15,7 @@ TICKERS = ["AAPL", "JPM", "AMZN", "TSLA", "MSFT"]
 
 # Must match training:
 WINDOW = int(os.environ.get("RL_WINDOW", 20))   # price window length W
-MODEL_PATH = os.environ.get("MODEL_PATH", "ppo_lstm_extractor_with_ta.zip")
+MODEL_PATH = os.environ.get("MODEL_PATH", "ppo_ceemd_cnnlstm_rl.zip")
 
 INITIAL_CASH = float(os.environ.get("INITIAL_CASH", 10_000))
 SLEEP_INTERVAL = int(os.environ.get("SLEEP_INTERVAL", 60))  # seconds
@@ -261,3 +261,4 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"⚠️  Error in loop: {e}", flush=True)
         time.sleep(5)
+
