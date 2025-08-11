@@ -34,11 +34,23 @@ RET_WIN = 1
 VOL_WIN = 20
 VOLZ_WIN = 60
 
-# we need enough bars to compute all indicators, plus the WINDOW slice
-HIST_N = max(WINDOW, MACD_SLOW, BB_WIN, VOL_WIN, VOLZ_WIN) + 5  # small cushion
+# Grab plenty of history to avoid NaNs from warmups
+HIST_N = max(300, WINDOW + MACD_SLOW + 50, VOLZ_WIN + 50, BB_WIN + 50)
 
 # ── RL AGENT ─────────────────────────────────────────────────────────────
-agent = PPO.load(MODEL_PATH)
+def _const(v):
+    return lambda _progress: v
+
+# Strip a trailing ".zip" to avoid accidental ".zip.zip" handling in some paths
+_model_path_stem = MODEL_PATH[:-4] if MODEL_PATH.endswith(".zip") else MODEL_PATH
+agent = PPO.load(
+    _model_path_stem,
+    custom_objects={
+        # set these to your training values if different
+        "lr_schedule": _const(2.5e-4),
+        "clip_range": _const(0.2),
+    },
+)
 
 # ── ALPACA CLIENT ────────────────────────────────────────────────────────
 api = REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, api_version="v2")
@@ -50,46 +62,50 @@ portfolio = {sym: {"shares": 0} for sym in TICKERS}
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
     Expects columns: 'close', 'volume'. Returns df with columns:
-      close, volume, Ret, RSI14, MACD, MACD_Signal, BB_Width, Vol20, VolZ60
+      close, volume, ret, rsi14, macd, macd_signal, bb_width, vol20, volz60
     """
     df = df.copy()
     c = df["close"].astype(float)
     v = df["volume"].astype(float)
 
-    # Daily return analogue on chosen timeframe
-    df["Ret"] = c.pct_change()
+    # Return on chosen timeframe
+    df["ret"] = c.pct_change(periods=RET_WIN)
 
     # RSI(14)
     delta = c.diff()
-    gain = delta.clip(lower=0.0).rolling(RSI_WIN).mean()
-    loss = -delta.clip(upper=0.0).rolling(RSI_WIN).mean()
+    gain = delta.clip(lower=0.0).rolling(RSI_WIN, min_periods=RSI_WIN).mean()
+    loss = -delta.clip(upper=0.0).rolling(RSI_WIN, min_periods=RSI_WIN).mean()
     rs = gain / (loss + 1e-12)
-    df["RSI14"] = 100.0 - (100.0 / (1.0 + rs))
+    df["rsi14"] = 100.0 - (100.0 / (1.0 + rs))
 
     # MACD(12,26,9)
     ema_fast = c.ewm(span=MACD_FAST, adjust=False).mean()
     ema_slow = c.ewm(span=MACD_SLOW, adjust=False).mean()
     macd_line = ema_fast - ema_slow
     macd_signal = macd_line.ewm(span=MACD_SIG, adjust=False).mean()
-    df["MACD"] = macd_line
-    df["MACD_Signal"] = macd_signal
+    df["macd"] = macd_line
+    df["macd_signal"] = macd_signal
 
     # Bollinger width (20,2) normalized by MA20 magnitude
-    ma = c.rolling(BB_WIN).mean()
-    sd = c.rolling(BB_WIN).std()
+    ma = c.rolling(BB_WIN, min_periods=BB_WIN).mean()
+    sd = c.rolling(BB_WIN, min_periods=BB_WIN).std()
     upper = ma + BB_DEV * sd
     lower = ma - BB_DEV * sd
-    df["BB_Width"] = (upper - lower) / (ma.abs() + 1e-12)
+    df["bb_width"] = (upper - lower) / (ma.abs() + 1e-12)
 
     # Rolling volatility of returns (20)
-    df["Vol20"] = df["Ret"].rolling(VOL_WIN).std()
+    df["vol20"] = df["ret"].rolling(VOL_WIN, min_periods=VOL_WIN).std()
 
     # Volume z-score (60)
-    mu = v.rolling(VOLZ_WIN).mean()
-    sdv = v.rolling(VOLZ_WIN).std()
-    df["VolZ60"] = (v - mu) / (sdv + 1e-12)
+    mu = v.rolling(VOLZ_WIN, min_periods=VOLZ_WIN).mean()
+    sdv = v.rolling(VOLZ_WIN, min_periods=VOLZ_WIN).std()
+    df["volz60"] = (v - mu) / (sdv + 1e-12)
 
-    return df.ffill().bfill()
+    # forward/back fill just in case, then drop rows still NaN on key features
+    df = df.ffill().bfill()
+    needed = ["rsi14", "macd", "macd_signal", "bb_width", "ret", "vol20", "volz60"]
+    df = df.dropna(subset=needed)
+    return df
 
 def get_recent_bars(sym: str, limit: int) -> pd.DataFrame:
     # Pull latest minute bars; adjust timeframe if you trained on another frame
@@ -98,9 +114,7 @@ def get_recent_bars(sym: str, limit: int) -> pd.DataFrame:
         return pd.DataFrame()
     # For single symbol, Alpaca returns single-index DF; ensure columns lower-case
     bars = bars.reset_index()
-    # Standardize column names to lower
     bars.columns = [str(c).lower() for c in bars.columns]
-    # keep only cols we need
     cols = [c for c in ["timestamp", "open", "high", "low", "close", "volume"] if c in bars.columns]
     return bars[cols].copy()
 
@@ -115,26 +129,27 @@ def build_asset_block(sym: str) -> Tuple[np.ndarray, float]:
         raise ValueError(f"Not enough bars for {sym} (have {len(df)}, need >= {WINDOW})")
 
     df_ind = compute_indicators(df)
+    if len(df_ind) < WINDOW:
+        raise ValueError(f"Not enough post-indicator rows for {sym} (have {len(df_ind)}, need >= {WINDOW})")
 
     # WINDOW closes ending at the last bar (exclusive of the next step, mirroring env)
     closes_win = df_ind["close"].iloc[-WINDOW:].to_numpy(dtype=float)
     base = float(max(closes_win[0], 1e-12))
     norm_window = (closes_win / base).astype(np.float64)  # length = WINDOW
 
-    j = df_ind.index[-1]  # last row index
-    # grab last scalars (t-1 equivalents in our streaming setting)
-    rsi14 = float(df_ind.iloc[-1]["rsi14"])
-    macd = float(df_ind.iloc[-1]["macd"])
-    macd_sig = float(df_ind.iloc[-1]["macd_signal"])
-    bb_w = float(df_ind.iloc[-1]["bb_width"])
-    ret_ = float(df_ind.iloc[-1]["ret"])
-    vol20 = float(df_ind.iloc[-1]["vol20"])
-    volz60 = float(df_ind.iloc[-1]["volz60"])
+    # last scalars
+    needed_cols = ["rsi14", "macd", "macd_signal", "bb_width", "ret", "vol20", "volz60"]
+    missing = [c for c in needed_cols if c not in df_ind.columns]
+    if missing:
+        raise KeyError(f"{sym} missing columns after indicator calc: {missing}")
 
-    scalars = np.array([rsi14, macd, macd_sig, bb_w, ret_, vol20, volz60], dtype=np.float64)
+    last = df_ind.iloc[-1]
+    scalars = np.array(
+        [float(last[c]) for c in needed_cols],
+        dtype=np.float64
+    )
 
-    latest_price = float(df_ind.iloc[-1]["close"])
-
+    latest_price = float(last["close"])
     block = np.concatenate([norm_window, scalars], axis=0)  # length = WINDOW + 7
     return block, latest_price
 
@@ -201,16 +216,15 @@ if __name__ == "__main__":
 
             # 4) Policy -> target weights (long-only, sum ≤ 1)
             raw_action, _ = agent.predict(obs, deterministic=True)
-            # PPO returns Box action shaped (K,)
             weights = np.clip(raw_action.reshape(-1), 0.0, 1.0)
             total_w = float(weights.sum())
             if total_w > 1.0:
                 weights /= total_w  # keep ≤1
-            # OPTIONAL: if you prefer softmaxed weights that always sum to 1-cash_buffer, use:
+            # OPTIONAL: always allocate all via softmax (comment out above two lines if you use this)
             # weights = softmax(raw_action) * 0.95
 
             # 5) Target allocations
-            investable_value = net_worth  # we let the policy leave cash via sum(weights) <= 1
+            investable_value = net_worth  # policy can leave cash via sum(weights) <= 1
             target_values = weights * investable_value
             current_values = shares_vec * latest_prices
             deltas = target_values - current_values  # $ to add/remove per asset
@@ -218,7 +232,6 @@ if __name__ == "__main__":
             # 6) Rebalance with market orders (minimal sanity checks)
             for i, sym in enumerate(TICKERS):
                 px = latest_prices[i]
-                # integral shares
                 target_shares = int(target_values[i] // max(px, 1e-12))
                 cur_sh = portfolio[sym]["shares"]
                 to_trade = target_shares - cur_sh
@@ -261,4 +274,3 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"⚠️  Error in loop: {e}", flush=True)
         time.sleep(5)
-
