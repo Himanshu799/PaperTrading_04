@@ -21,7 +21,7 @@ COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/pytho
 COPY deploy.py .
 COPY models/ models/
 COPY preprocessed_data/ preprocessed_data/
-COPY ppo_multistock_rl.zip .
+COPY ppo_ceemd_cnnlstm_rl.zip .
 
 # 6. Entrypoint
 CMD ["python", "deploy.py"]
